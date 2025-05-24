@@ -13,8 +13,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/Importer.hpp>
 
-#include <btBulletDynamicsCommon.h>
-#include <LinearMath/btVector3.h>
+#include <btBulletCollisionCommon.h>
 
 GLuint compileShader(GLenum type, const char* source) {
     GLuint shader = glCreateShader(type);
@@ -80,6 +79,34 @@ GLuint createShaderProgram() {
 
     return shaderProgram;
 }
+
+std::vector<float> debug_vertices;
+
+class PhysicsDebug : public btIDebugDraw
+{
+public:
+    void drawLine(const btVector3& from, const btVector3& to, const btVector3& color) override
+    {
+        debug_vertices.push_back(from.x());
+        debug_vertices.push_back(from.y());
+        debug_vertices.push_back(from.z());
+
+        debug_vertices.push_back(to.x());
+        debug_vertices.push_back(to.y());
+        debug_vertices.push_back(to.z());
+    }
+
+    void clearLines() override
+    {
+        debug_vertices.clear();
+    }
+    
+    void drawContactPoint(const btVector3& PointOnB, const btVector3& normalOnB, btScalar distance, int lifeTime, const btVector3& color) override{}
+    void reportErrorWarning(const char* warningString) override{}
+    void draw3dText(const btVector3& location, const char* textString) override{}
+    void setDebugMode(int debugMode) override{}
+    int getDebugMode() const override { return DBG_DrawWireframe; }
+};
 
 int main() {
     const auto WINDOW_WIDTH = 480.f;
@@ -227,77 +254,42 @@ int main() {
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    
+    //##########################################################################################################
+    //########################## BULLET PHYSICS SETUP ##########################################################
+    //##########################################################################################################
 
-    //###################################################################################################################
-
-    //----- Bullet Initialization -----
-    // 1. Broadphase (collision detection structure)
-    btBroadphaseInterface* broadphase = new btDbvtBroadphase();
-
-    // 2. Collision configuration and dispatcher
-    btDefaultCollisionConfiguration* collisionConfig = new btDefaultCollisionConfiguration();
-    btCollisionDispatcher* dispatcher = new btCollisionDispatcher(collisionConfig);
-
-    // 3. Constraint solver
-    btSequentialImpulseConstraintSolver* solver = new btSequentialImpulseConstraintSolver;
-
-    // 4. Create the dynamics world
-    btDiscreteDynamicsWorld* dynamicsWorld = new btDiscreteDynamicsWorld(
-        dispatcher, broadphase, solver, collisionConfig
+    btCollisionWorld* world = new btCollisionWorld(
+        new btCollisionDispatcher(new btDefaultCollisionConfiguration()),
+        new btDbvtBroadphase(),
+        new btDefaultCollisionConfiguration()
     );
-    dynamicsWorld->setGravity(btVector3(0, -9.81f, 0));
 
-    //----- Create Ground Plane -----
-    btCollisionShape* groundShape = new btStaticPlaneShape(btVector3(0, 1, 0), 0);
-    btDefaultMotionState* groundMotionState = new btDefaultMotionState();
-    btRigidBody::btRigidBodyConstructionInfo groundInfo(0, groundMotionState, groundShape, btVector3(0, 0, 0));
-    btRigidBody* groundBody = new btRigidBody(groundInfo);
-    dynamicsWorld->addRigidBody(groundBody);
+    // Add PhysicsDebug instance in main
+    PhysicsDebug debugDrawer;
 
-    //----- Create Falling Box -----
-    btCollisionShape* boxShape = new btBoxShape(btVector3(1, 1, 1));
-    btDefaultMotionState* boxMotionState = new btDefaultMotionState(btTransform(
-        btQuaternion(0, 0, 0, 1),
-        btVector3(0, 50, 0)  // Start position
-    ));
+    // After creating the world, set the debug drawer
+    world->setDebugDrawer(&debugDrawer);
+    
+    btCollisionShape* tileShape = new btBoxShape(btVector3(0.5f, 0.5f, 0.5f));
 
-    btScalar mass = 1;
-    btVector3 boxInertia(0, 0, 0);
-    boxShape->calculateLocalInertia(mass, boxInertia);
+    btCollisionObject* tileObject = new btCollisionObject();
+    tileObject->setCollisionShape(tileShape);
 
-    btRigidBody::btRigidBodyConstructionInfo boxInfo(mass, boxMotionState, boxShape, boxInertia);
-    btRigidBody* boxBody = new btRigidBody(boxInfo);
-    dynamicsWorld->addRigidBody(boxBody);
+    world->addCollisionObject(tileObject);
 
-    //----- Simulation Step -----
-    for (int i = 0; i < 300; i++) {
-        dynamicsWorld->stepSimulation(1 / 60.f, 10);
+    GLuint vaoDebug{}, vboDebug{}, eboDebug{};
 
-        // Get box position
-        btTransform trans;
-        boxBody->getMotionState()->getWorldTransform(trans);
-        std::cout << "Step " << i << ": Box Y = " << trans.getOrigin().getY() << std::endl;
-    }
+    glGenVertexArrays(1, &vaoDebug);
+    glBindVertexArray(vaoDebug);
 
-    //----- Cleanup -----
-// Remove and delete box
-    dynamicsWorld->removeRigidBody(boxBody);  // <-- Add this
-    delete boxBody->getMotionState();
-    delete boxBody;
-    delete boxShape;
+    glGenBuffers(1, &vboDebug);
+    glBindBuffer(GL_ARRAY_BUFFER, vboDebug);//<= Using glVertexAttribPointer without this line causes error.
 
-    // Remove and delete ground
-    dynamicsWorld->removeRigidBody(groundBody);  // <-- Add this
-    delete groundBody->getMotionState();
-    delete groundBody;
-    delete groundShape;
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
-    // Delete Bullet objects in reverse creation order
-    delete dynamicsWorld;  // Deletes remaining internal structures
-    delete solver;
-    delete collisionConfig;
-    delete dispatcher;
-    delete broadphase;
+    //##########################################################################################################
 
     glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
 
@@ -307,12 +299,27 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
+        world->performDiscreteCollisionDetection(); // ADD THIS LINE
+        world->debugDrawWorld();
+
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
 
         glUniformMatrix4fv(0, 1, GL_FALSE, glm::value_ptr(projection));
         glUniformMatrix4fv(1, 1, GL_FALSE, glm::value_ptr(view));
+
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+        glUniformMatrix4fv(2, 1, GL_FALSE, glm::value_ptr(model));
+
+        glBindBuffer(GL_ARRAY_BUFFER, vboDebug);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * debug_vertices.size(), debug_vertices.data(), GL_DYNAMIC_DRAW);
+
+        glBindVertexArray(vaoDebug);
+        glUniform3fv(3, 1, glm::value_ptr(glm::vec3(0.0f, 1.0f, 1.0f)));
+        glDrawArrays(GL_LINES, 0, debug_vertices.size()/3);
+
 
         for (auto row = 0; row < 3; row++)
         {
@@ -356,6 +363,9 @@ int main() {
     glDeleteVertexArrays(1, &vaoX);
     glDeleteBuffers(1, &vboX);
     glDeleteBuffers(1, &eboX);
+
+    glDeleteVertexArrays(1, &vaoDebug);
+    glDeleteBuffers(1, &vboDebug);
 
     glDeleteProgram(shaderProgram);
 
