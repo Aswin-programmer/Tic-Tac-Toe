@@ -13,6 +13,9 @@
 #include <assimp/postprocess.h>
 #include <assimp/Importer.hpp>
 
+#include <btBulletDynamicsCommon.h>
+#include <LinearMath/btVector3.h>
+
 GLuint compileShader(GLenum type, const char* source) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, nullptr);
@@ -226,6 +229,75 @@ int main() {
     glEnableVertexAttribArray(0);
 
     //###################################################################################################################
+
+    //----- Bullet Initialization -----
+    // 1. Broadphase (collision detection structure)
+    btBroadphaseInterface* broadphase = new btDbvtBroadphase();
+
+    // 2. Collision configuration and dispatcher
+    btDefaultCollisionConfiguration* collisionConfig = new btDefaultCollisionConfiguration();
+    btCollisionDispatcher* dispatcher = new btCollisionDispatcher(collisionConfig);
+
+    // 3. Constraint solver
+    btSequentialImpulseConstraintSolver* solver = new btSequentialImpulseConstraintSolver;
+
+    // 4. Create the dynamics world
+    btDiscreteDynamicsWorld* dynamicsWorld = new btDiscreteDynamicsWorld(
+        dispatcher, broadphase, solver, collisionConfig
+    );
+    dynamicsWorld->setGravity(btVector3(0, -9.81f, 0));
+
+    //----- Create Ground Plane -----
+    btCollisionShape* groundShape = new btStaticPlaneShape(btVector3(0, 1, 0), 0);
+    btDefaultMotionState* groundMotionState = new btDefaultMotionState();
+    btRigidBody::btRigidBodyConstructionInfo groundInfo(0, groundMotionState, groundShape, btVector3(0, 0, 0));
+    btRigidBody* groundBody = new btRigidBody(groundInfo);
+    dynamicsWorld->addRigidBody(groundBody);
+
+    //----- Create Falling Box -----
+    btCollisionShape* boxShape = new btBoxShape(btVector3(1, 1, 1));
+    btDefaultMotionState* boxMotionState = new btDefaultMotionState(btTransform(
+        btQuaternion(0, 0, 0, 1),
+        btVector3(0, 50, 0)  // Start position
+    ));
+
+    btScalar mass = 1;
+    btVector3 boxInertia(0, 0, 0);
+    boxShape->calculateLocalInertia(mass, boxInertia);
+
+    btRigidBody::btRigidBodyConstructionInfo boxInfo(mass, boxMotionState, boxShape, boxInertia);
+    btRigidBody* boxBody = new btRigidBody(boxInfo);
+    dynamicsWorld->addRigidBody(boxBody);
+
+    //----- Simulation Step -----
+    for (int i = 0; i < 300; i++) {
+        dynamicsWorld->stepSimulation(1 / 60.f, 10);
+
+        // Get box position
+        btTransform trans;
+        boxBody->getMotionState()->getWorldTransform(trans);
+        std::cout << "Step " << i << ": Box Y = " << trans.getOrigin().getY() << std::endl;
+    }
+
+    //----- Cleanup -----
+// Remove and delete box
+    dynamicsWorld->removeRigidBody(boxBody);  // <-- Add this
+    delete boxBody->getMotionState();
+    delete boxBody;
+    delete boxShape;
+
+    // Remove and delete ground
+    dynamicsWorld->removeRigidBody(groundBody);  // <-- Add this
+    delete groundBody->getMotionState();
+    delete groundBody;
+    delete groundShape;
+
+    // Delete Bullet objects in reverse creation order
+    delete dynamicsWorld;  // Deletes remaining internal structures
+    delete solver;
+    delete collisionConfig;
+    delete dispatcher;
+    delete broadphase;
 
     glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
 
